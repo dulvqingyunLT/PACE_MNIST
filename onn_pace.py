@@ -35,6 +35,8 @@ class OPU:
         self.weight_vector_len = spec.weight_vector_len
         self.bits = spec.bits
         self.out_bits = spec.out_bits
+        self.tia_noise_mean = spec.tia_noise_mean
+        self.tia_noise_sigma = spec.tia_noise_sigma
 
 
 

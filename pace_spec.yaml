@@ -2,3 +2,5 @@ input_vector_len: 64
 weight_vector_len: 64
 bits: 4 # range from 1~6
 out_bits: 1
+tia_noise_sigma: 0.1
+tia_noise_mean: 12

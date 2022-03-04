@@ -19,35 +19,24 @@ class Model(torch.nn.Module):
         # self.fc2 = onn_fc(64, 10)
         self.onn_binary = onn_binary.apply
 
-    def forward(self, x):
-        """前向传播"""
-        
+    def forward(self, x):        
         # [b, 1, 28, 28] => [b, 32, 28, 28]
         x_bin = self.onn_binary(x)
         out = self.conv1(x_bin)
-        out = torch.relu(out)
+        # out = torch.relu(out)
         out = F.max_pool2d(out, 2)
 
-        
-        # [b, 32, 14, 14] => [b, 64, 14, 14]
+        # [b, 32, 14, 14] => [b, 48, 14, 14]
         out_bin = self.onn_binary(out)
         out = self.conv2(out_bin)
-        out = torch.relu(out)
+        # out = torch.relu(out)
         out = F.max_pool2d(out, 2)
         
-        
-        # [b, 64, 7, 7] => [b, 64 * 7 * 7] =>[b,3136]
+        # [b, 48, 7, 7] => [b, 48 * 7 * 7]
         out = torch.flatten(out, 1)
-        
-        # [b, 64 * 7 * 7] => [b, 64]
+        # [b, 48 * 7 * 7] => [b, 64]
         out_bin = self.onn_binary(out)
         out = self.fc1(out_bin)
-        # out = F.tanh(out)
-        
-        # [b, 64] => [b, 10]
-        # out = self.dropout2(out)
-        # out_bin = torch.where(out<=0.0, 0.0, 1.0)
-        # out = self.fc2(out_bin)
 
         output = F.log_softmax(out, dim=1)
 
@@ -169,8 +158,9 @@ def main():
     
     model_state = network.state_dict()
     torch.save(model_state, 'train_5.pth')
-    
-    np.savez('paras.npz', conv1w=model_state['conv1.weight'], conv2w=model_state['conv2.weight'], fc_w=model_state['fc1.weight'])
-
+    if use_cuda:
+        np.savez('paras.npz', conv1w=model_state['conv1.weight'].cpu(), conv2w=model_state['conv2.weight'].cpu(), fc_w=model_state['fc1.weight'].cpu())
+    else:
+        np.savez('paras.npz', conv1w=model_state['conv1.weight'], conv2w=model_state['conv2.weight'], fc_w=model_state['fc1.weight'])    
 if __name__ == "__main__":
     main()

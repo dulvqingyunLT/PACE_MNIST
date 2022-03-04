@@ -52,17 +52,20 @@ class onn_bit_shift(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
+
 class onn_dot_fun(torch.autograd.Function):
-    
-    cv_bits=4
-    tia_noise_sigma=0.1
-    tia_noise_mean=12
-    out_bits=1
+    def __init__(self, opu) -> None:
+        super().__init__()
+
+    cv_bits = opu.bits
+    tia_noise_sigma = opu.tia_noise_sigma
+    tia_noise_mean = opu.tia_noise_mean
+    out_bits = opu.out_bits
     # my_onn_round = onn_round.apply
     onn_bit_shift = onn_bit_shift.apply
 
     @staticmethod
-    def forward(ctx, input, weight):
+    def forward(ctx, input, weight, ):
         ctx.save_for_backward(input, weight)
         out_mat = input.matmul(weight)
         out_mat = torch.clamp(out_mat, -128, 127) + 128

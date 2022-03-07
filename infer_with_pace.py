@@ -118,9 +118,17 @@ def conv2d_infer(x, filters, channelast=False):
     weight = padded_wt.transpose(1,0).reshape(weight_.shape[1], repeats, -1).transpose(2,1,0)
 
     temp_out = np.zeros(shape=(inp_unf_.shape[0], weight_.shape[1]), dtype=np.int32)
-    for i in range(repeats):
-        matmul_result = onn_dot_sim(inp_unf[:, i, :], weight[:,i,:])
-        temp_out = temp_out+ matmul_result
+
+    # for i in range(repeats):
+    #     matmul_result = onn_dot_sim(inp_unf[:, i, :], weight[:,i,:])
+    #     temp_out = temp_out+ matmul_result
+
+    for m in range(temp_out.shape[0]):
+        for n in range(temp_out.shape[1]):
+            scalar = 0
+            for i in range(repeats):
+                scalar += onn_dot_sim(inp_unf[m, i, :], weight[:,i,n])
+            temp_out[m,n]=scalar
 
     out_ = temp_out.reshape([inp_unf_.shape[0], weight_.shape[1]])
     
@@ -185,9 +193,18 @@ def fc_infer(x, filters):
 
     temp_out = np.zeros(shape=(x.shape[0], filters.shape[1]), dtype=np.int32)
 
-    for i in range(repeats):
-        matmul_result = onn_dot_sim(inp_[:, i, :], weight_[:,i,:])
-        temp_out = temp_out+ matmul_result
+    # for i in range(repeats):
+    #     matmul_result = onn_dot_sim(inp_[:, i, :], weight_[:,i,:])
+    #     temp_out = temp_out+ matmul_result
+
+
+    for m in range(temp_out.shape[0]):
+        for n in range(temp_out.shape[1]):
+            scalar = 0
+            for i in range(repeats):
+                scalar += onn_dot_sim(inp_[m, i, :], weight_[:,i,n])
+            temp_out[m,n]=scalar
+
 
     return temp_out
 

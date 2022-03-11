@@ -3,7 +3,7 @@ import torch
 import torchvision
 import torch.functional as F
 from torch.utils.data import DataLoader
-from ops_OPU_5 import *
+from ops_OPU_6 import *
 
 
 class Model(torch.nn.Module):
@@ -12,10 +12,10 @@ class Model(torch.nn.Module):
 
         # 卷积层
         self.conv1 = onn_conv2d(1, 32)
-        self.conv2 = onn_conv2d(32, 48)
+        self.conv2 = onn_conv2d(32, 64)
 
         # 全连接层
-        self.fc1 = onn_fc(7*7*48, 10)
+        self.fc1 = onn_fc(7*7*64, 10)
         # self.fc2 = onn_fc(64, 10)
         self.onn_binary = onn_binary.apply
 
@@ -46,7 +46,7 @@ class Model(torch.nn.Module):
 # 定义超参数
 batch_size = 64  # 一次训练的样本数目
 learning_rate = 0.001  # 学习率
-iteration_num = 1  # 迭代次数
+iteration_num = 20  # 迭代次数
 network = Model()  # 实例化网络
 print(network)  # 调试输出网络结构
 optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate)  # 优化器
@@ -157,10 +157,60 @@ def main():
         test(network, test_loader)
     
     model_state = network.state_dict()
-    torch.save(model_state, 'pace_mnist_5.pth')
+    torch.save(model_state, 'pace_mnist.pth')
+
     if use_cuda:
-        np.savez('pace_mnist_5.npz', conv1w=model_state['conv1.weight'].cpu(), conv2w=model_state['conv2.weight'].cpu(), fc_w=model_state['fc1.weight'].cpu())
+        conv1w=model_state['conv1.weight'].cpu().numpy()
+        conv2w=model_state['conv2.weight'].cpu().numpy()
+        fc_w=model_state['fc1.weight'].cpu().numpy()
     else:
-        np.savez('pace_mnist_5.npz', conv1w=model_state['conv1.weight'], conv2w=model_state['conv2.weight'], fc_w=model_state['fc1.weight'])    
+        conv1w=model_state['conv1.weight'].numpy()
+        conv2w=model_state['conv2.weight'].numpy()
+        fc_w=model_state['fc1.weight'].numpy()
+
+    def round_convw(weight):
+        pace_spec = OmegaConf.load('pace_spec.yaml')
+        opu = OPU(pace_spec)
+        outchns, inchns, filter_h, filter_w,  = weight.shape
+        w_scale_factor =(2**opu.bits-1) / (weight.max()-weight.min() + 1e-9) 
+
+        weight__ = np.round(weight * w_scale_factor )
+        weight__ = np.clip(weight__, -7, 7)    
+        weight__ = weight__.astype(np.int8)
+        weight_ = weight__.reshape(outchns, -1).transpose(1,0) #[out_c,c*k*k]-->[c*k*k, out_c]
+
+        repeats = (inchns*filter_h*filter_w) // opu.input_vector_len
+        remainder = (inchns*filter_h*filter_w) % opu.input_vector_len
+        repeats = repeats+1 if remainder!=0 else repeats
+
+        pad_dim = opu.input_vector_len*repeats - weight_.shape[0]
+        padded_wt = np.pad(weight_,((0,pad_dim),(0,0)),"constant",constant_values=0)
+        result = padded_wt.transpose(1,0).reshape(weight_.shape[1], repeats, -1).transpose(2,1,0)
+        return result 
+
+    def round_fcw(filters):
+        pace_spec = OmegaConf.load('pace_spec.yaml')
+        opu = OPU(pace_spec)
+        repeats = filters.shape[0] // opu.input_vector_len
+        remainder = filters.shape[0] % opu.input_vector_len
+        repeats = repeats+1 if remainder!=0 else repeats
+        w_scale_factor =(2 ** opu.bits - 1) / (filters.max() - filters.min() + 1e-9) 
+        pad_dim=opu.input_vector_len*repeats - filters.shape[0]
+
+        weight__ = np.round(filters * w_scale_factor )
+        weight__ = np.clip(weight__, -7, 7)
+        weight__ = weight__.astype(np.int8)
+        padded_wt = np.pad(weight__,((0,pad_dim),(0,0)),"constant",constant_values=0)
+        weight_ = padded_wt.transpose(1,0).reshape(filters.shape[1], repeats, -1).transpose(2,1,0)
+
+        return weight_
+
+    conv1w = round_convw(conv1w)
+    conv2w = round_convw(conv2w)
+    fc_w = round_fcw(fc_w)
+    np.savez('pace_mnist_int.npz', conv1w=conv1w, conv2w=conv2w, fc_w=fc_w)
+    
+    np.savez('pace_mnist_float.npz', conv1w=model_state['conv1.weight'].cpu(), conv2w=model_state['conv2.weight'].cpu(), fc_w=model_state['fc1.weight'].cpu())   
+
 if __name__ == "__main__":
     main()

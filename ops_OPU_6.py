@@ -40,13 +40,17 @@ class onn_binary(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
-class onn_bit_shift(torch.autograd.Function):
+class onn_thresh(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, out_bits):
+    def forward(ctx, input):
         ctx.save_for_backward(input)
-        output = input.type(torch.uint8) >> (8 - out_bits)
-        
-        return output.type(torch.float32)
+        output = torch.where(input<0, 0.0, 1.0)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -62,18 +66,17 @@ class onn_dot_fun(torch.autograd.Function):
     tia_noise_mean = opu.tia_noise_mean
     out_bits = opu.out_bits
     # my_onn_round = onn_round.apply
-    onn_bit_shift = onn_bit_shift.apply
+    onn_thresh = onn_thresh.apply
 
     @staticmethod
     def forward(ctx, input, weight, ):
         ctx.save_for_backward(input, weight)
         out_mat = input.matmul(weight)
-        out_mat = torch.clamp(out_mat, -128, 127) + 128
-        # out_mat = torch.clamp(out_mat, -128, 127)
-        # thresh = torch.randn(size=out_mat.size(), requires_grad=False, device=input.device)*onn_dot_fun.tia_noise_sigma + onn_dot_fun.tia_noise_mean
-        # out_mat += thresh
+        out_mat = torch.clamp(out_mat, -128, 127)
+        thresh = torch.randn(size=out_mat.size(), requires_grad=False, device=input.device)*onn_dot_fun.tia_noise_sigma + onn_dot_fun.tia_noise_mean
+        out_mat += thresh
         # out_interm = onn_dot_fun.my_onn_round(out_mat) # input和weight均为整数，所以不需要round操作了。
-        result = onn_dot_fun.onn_bit_shift(out_mat, onn_dot_fun.out_bits)
+        result = onn_dot_fun.onn_thresh(out_mat)
         # bit_shift_result = out_interm.type(torch.uint8) >> (8 - onn_dot_fun.out_bits)
         return result
 

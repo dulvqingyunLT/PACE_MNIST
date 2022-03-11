@@ -127,7 +127,7 @@ def test(model, test_loader):
 def main():
     # 获取数据
     _, test_loader = get_data()
-    network.load_state_dict(torch.load('train_5.pth'))
+    network.load_state_dict(torch.load('pace_mnist.pth'))
     test(network, test_loader)
     
 if __name__ == "__main__":

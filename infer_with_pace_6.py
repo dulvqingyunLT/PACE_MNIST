@@ -2,7 +2,7 @@ from genericpath import isfile
 from multiprocessing import pool
 from typing import OrderedDict
 import numpy as np
-
+import logging 
 from onn_pace import OPU
 from omegaconf import OmegaConf
 import os
@@ -26,6 +26,71 @@ def load_torch_model(path):
 
     # r = np.load('paras.npz')
     # print(r['conv1w'])
+
+def dot_production(universe, log,input_vector = [],input_weigth=[],threshold_offset = 0):
+    mod_data_ary=[]
+    zero_tempval = []
+    compare_out_val = []
+    val_out = []
+    threshold_int = []
+
+    zero_mode_data = [0,0,0,0,0,0,0,0]
+
+    moddat_len = len(input_vector)
+    weitht_len = len(input_weigth)
+
+    if moddat_len<64 or weitht_len<64:
+        logging.error("vector length({}) or weitht length({}) is too short".format(moddat_len,weitht_len))
+    #log.info("vector: {}".format(input_vector))
+    #log.info("weight: {}".format(input_weigth))
+
+    for i in range(64):
+        val_out.append(0)
+        zero_tempval.append(0)
+
+    mod_data_ary=int_big_list_to_int_small_list(input_vector,64,8)
+
+
+
+    ising_common.config_tx_driver_invert(universe, 0) # tx invert
+    weight_lsb_msb_lookup_table1(universe, log,weight = input_weigth)
+
+
+
+    ising_common.mod_data_load(universe,zero_mode_data)
+
+
+
+    zero_tempval= ising_common.hw_binary_search(universe,log,dac_delay=100)
+
+
+
+    zero_tempval[63]+=threshold_offset
+
+    for k in range(64):
+        threshold_int.append(round(zero_tempval[k]))
+
+    ising_common.config_rx_thresholds_ex(universe, value=threshold_int)
+
+    ising_common.mod_data_load(universe,mod_data_ary)
+
+    compare_out_val=ising_common.read_rx_comparator_out_all(universe)
+
+
+
+    for chnl in range(64): # count zero or one counter
+        bytechaneel = chnl//8
+        bitseq = chnl % 8
+        tempvalue1 = 0
+        tempvalue1 = 1<<bitseq
+        tempvalue = compare_out_val[bytechaneel] & tempvalue1
+        if tempvalue:
+            val_out[chnl] = 1
+        else :
+            val_out[chnl] = 0
+            
+    return val_out
+
 
 def extract_npy(var_path):
 
@@ -63,14 +128,23 @@ def img_unfold(input_data, filter_h, filter_w, stride=1, pad=0, channelast=False
     return out
 
 
+# def onn_dot_sim(input,weight):
+    
+#     out_mat = np.matmul(input,weight)
+#     out_mat = np.clip(out_mat, -128, 127) + 128
+
+#     bit_shift_result = out_mat.astype(np.uint8) >> (8 - opu.out_bits)
+
+#     return bit_shift_result
+
 def onn_dot_sim(input,weight):
     
     out_mat = np.matmul(input,weight)
-    out_mat = np.clip(out_mat, -128, 127) + 128
+    out_mat = np.clip(out_mat, -128, 127) + np.random.normal(size=out_mat.shape)
 
-    bit_shift_result = out_mat.astype(np.uint8) >> (8 - opu.out_bits)
+    result = np.where(out_mat<0, 0, 1).astype(np.uint8)
 
-    return bit_shift_result
+    return result 
 
 def onn_binary(input):
     thresh =  np.min(input) + (np.max(input) - np.min(input)) / 2
@@ -79,62 +153,47 @@ def onn_binary(input):
     return output.astype(np.uint8)
 
 def conv2d_infer(x, filters, channelast=False):
-    outchns, inchns, filter_h, filter_w,  = filters.shape
+
     stride = 1
+    padding = 1
+    filter_h = 3
+    filter_w = 3
     c_in, h_in, w_in = x.shape
-    assert filter_h == filter_w
-    assert(c_in == inchns)
-    padding = (filter_h - 1) // 2
 
     h_out = (h_in + 2 * padding - (filter_h - 1) - 1) / stride + 1
     w_out = (w_in + 2 * padding - (filter_h - 1) - 1) / stride + 1
     h_out, w_out = int(h_out), int(w_out)
 
-    w_scale_factor =(2** opu.bits-1) / (filters.max()-filters.min() + 1e-9) 
+    # w_scale_factor =(2** opu.bits-1) / (filters.max()-filters.min() + 1e-9) 
 
     inp_unf_ = img_unfold(x, filter_h, filter_w, stride=1, pad=padding, channelast=channelast)
     # inp_unf_=inp_unf_.transpose(1, 0)
 
-    weight__ = np.round(filters * w_scale_factor )
-    weight__ = np.clip(weight__, -7, 7)
-    weight__ = weight__.astype(np.int8)
-
-    weight_ = weight__.reshape(outchns, -1).transpose(1,0) #[out_c,c*k*k]-->[c*k*k, out_c]
 
     repeats = inp_unf_.shape[-1] // opu.input_vector_len
     remainder = inp_unf_.shape[-1] % opu.input_vector_len
     repeats = repeats+1 if remainder!=0 else repeats
 
-    # dim=(0, opu.input_vector_len*repeats - weight_.size(0), 0, 0) #左右上下， 填右边
-    pad_dim = opu.input_vector_len*repeats - weight_.shape[0]
+    pad_dim = opu.input_vector_len*repeats - filter_h*filter_w*c_in
     padded_inp = np.pad( inp_unf_, ((0,0),(0,pad_dim)),"constant",constant_values=0)
 
     inp_unf = padded_inp.reshape([inp_unf_.shape[0], repeats, -1])
 
-    # dim=(0, 0, 0,self.hardware.input_vector_len*repeats - weight_.size(0)) #左右上下， 填下边
-    # pad_dim = opu.input_vector_len*repeats - weight_.shape[0]
-    padded_wt = np.pad(weight_,((0,pad_dim),(0,0)),"constant",constant_values=0)
 
-    weight = padded_wt.transpose(1,0).reshape(weight_.shape[1], repeats, -1).transpose(2,1,0)
-
-    temp_out = np.zeros(shape=(inp_unf_.shape[0], weight_.shape[1]), dtype=np.int32)
-
-    # for i in range(repeats):
-    #     matmul_result = onn_dot_sim(inp_unf[:, i, :], weight[:,i,:])
-    #     temp_out = temp_out+ matmul_result
+    temp_out = np.zeros(shape=(inp_unf_.shape[0], filters.shape[2]), dtype=np.int32)
 
     for m in range(temp_out.shape[0]):
         for n in range(temp_out.shape[1]):
             scalar = 0
             for i in range(repeats):
-                scalar += onn_dot_sim(inp_unf[m, i, :], weight[:,i,n])
+                scalar += onn_dot_sim(inp_unf[m, i, :], filters[:,i,n])
             temp_out[m,n]=scalar
 
-    out_ = temp_out.reshape([inp_unf_.shape[0], weight_.shape[1]])
+    # out_ = temp_out.reshape([inp_unf_.shape[0], filters.shape[1]])
     
-    out_unf = out_.transpose(1,0)
+    out_unf = temp_out.transpose(1,0)
 
-    out = out_unf.reshape([outchns, h_out, w_out])
+    out = out_unf.reshape([filters.shape[2], h_out, w_out])
     return out
 
 
@@ -169,13 +228,13 @@ def maxpooling(x, pool_size=2):
 #     return np.squeeze(pool_z,0)
 
 def fc_infer(x, filters):
-    assert(x.shape[-1] == filters.shape[0])
+    # assert(x.shape[-1] == filters.shape[0])
     batch_size = x.shape[0]
     repeats = x.shape[-1] // opu.input_vector_len
     remainder = x.shape[-1] % opu.input_vector_len
     repeats = repeats+1 if remainder!=0 else repeats
     
-    w_scale_factor =(2 ** opu.bits - 1) / (filters.max() - filters.min() + 1e-9) 
+
 
     
     pad_dim=opu.input_vector_len*repeats-x.shape[-1]#填右边
@@ -183,15 +242,8 @@ def fc_infer(x, filters):
 
     inp_ = inp_.reshape([batch_size, repeats, -1])
 
-    weight__ = np.round(filters * w_scale_factor )
-    weight__ = np.clip(weight__, -7, 7)
-    weight__ = weight__.astype(np.int8)
 
-    # pad_dim = opu.input_vector_len*repeats - filters.shape[0]
-    padded_wt = np.pad(weight__,((0,pad_dim),(0,0)),"constant",constant_values=0)
-    weight_ = padded_wt.transpose(1,0).reshape(filters.shape[1], repeats, -1).transpose(2,1,0)
-
-    temp_out = np.zeros(shape=(x.shape[0], filters.shape[1]), dtype=np.int32)
+    temp_out = np.zeros(shape=(x.shape[0], filters.shape[-1]), dtype=np.int32)
 
     # for i in range(repeats):
     #     matmul_result = onn_dot_sim(inp_[:, i, :], weight_[:,i,:])
@@ -202,7 +254,7 @@ def fc_infer(x, filters):
         for n in range(temp_out.shape[1]):
             scalar = 0
             for i in range(repeats):
-                scalar += onn_dot_sim(inp_[m, i, :], weight_[:,i,n])
+                scalar += onn_dot_sim(inp_[m, i, :], filters[:,i,n])
             temp_out[m,n]=scalar
 
 
@@ -230,7 +282,7 @@ def translate_mnist():
     np.save("./data/test_labels", test_labels.numpy())
 
 if __name__ == "__main__":
-    var_path = './paras.npz'
+    var_path = './pace_mnist_int.npz'
     vars = extract_npy(var_path)
 
     conv1_w = vars[0]
@@ -268,6 +320,7 @@ if __name__ == "__main__":
         fc_1 = fc_infer(out, fc1_w)
         # print(fc_1)
         infer_label = np.argmax(fc_1)
+        print(infer_label, label)
         infer_labels += [infer_label]
         # print("gt: ", label, "Infer: ", infer_label)
 

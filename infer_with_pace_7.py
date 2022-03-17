@@ -1,31 +1,40 @@
+from cgitb import lookup
 from genericpath import isfile
-from multiprocessing import pool
-from typing import OrderedDict
+# from multiprocessing import pool
+
 import numpy as np
 import logging 
-from onn_pace import OPU
-from omegaconf import OmegaConf
+import time
+# from onn_pace import OPU
+# from omegaconf import OmegaConf
 import os
 
+lookup_talble = dict()
 var_name = ['conv1w',
             'conv2w',
             'fc_w']
 
-pace_spec = OmegaConf.load('pace_spec.yaml')
-opu = OPU(pace_spec)
+class OPU:
+    """ Optical Processing Unit (OPU) Design """
 
-def load_torch_model(path):
-    import torch
-    import numpy as np
-    model = torch.load(path,map_location=torch.device('cpu'))
-    if not isinstance(model, OrderedDict):
-        model = model.load_state_dict()
-    
-    np.savez('paras.npz', conv1w=model['conv1.weight'], conv2w=model['conv2.weight'], fc_w=model['fc1.weight'])
+    def __init__(self):
+        self.input_vector_len = 64
+        self.weight_vector_len = 64
+        self.bits = 2
+        self.out_bits = 1
+        self.tia_noise_mean = 0.0
+        self.tia_noise_sigma = 1.0
 
-    # r = np.load('paras.npz')
-    # print(r['conv1w'])
-
+# pace_spec = OmegaConf.load('pace_spec.yaml')
+opu = OPU()
+# opu = {
+#     'input_vector_len':64,
+#     'weight_vector_len':64,
+#     'bits':4,
+#     'out_bits':1,
+#     'tia_noise_mean':0,
+#     'tia_noise_sigma':1,
+# }
 
 def extract_npy(var_path):
 
@@ -35,6 +44,7 @@ def extract_npy(var_path):
         arr_list += [var_dict[i]]
 
     return arr_list
+    
 
 def img_unfold(input_data, filter_h, filter_w, stride=1, pad=0, channelast=False): # input_data batch为1
     #inp_unf_ = torch.nn.functional.unfold(inp, (k, k), padding=padding)  #[b, c*k*k, L]
@@ -62,20 +72,10 @@ def img_unfold(input_data, filter_h, filter_w, stride=1, pad=0, channelast=False
 
     return out
 
-
-# def onn_dot_sim(input,weight):
-    
-#     out_mat = np.matmul(input,weight)
-#     out_mat = np.clip(out_mat, -128, 127) + 128
-
-#     bit_shift_result = out_mat.astype(np.uint8) >> (8 - opu.out_bits)
-
-#     return bit_shift_result
-
 def onn_dot_sim(input,weight):
     
     out_mat = np.matmul(input,weight)
-    out_mat = np.clip(out_mat, -128, 127) + np.random.normal(size=out_mat.shape)
+    out_mat = np.clip(out_mat, -128, 127) #+ np.random.normal(size=out_mat.shape)
 
     result = np.where(out_mat<0, 0, 1).astype(np.uint8)
 
@@ -104,7 +104,6 @@ def conv2d_infer(x, filters, channelast=False):
     inp_unf_ = img_unfold(x, filter_h, filter_w, stride=1, pad=padding, channelast=channelast)
     # inp_unf_=inp_unf_.transpose(1, 0)
 
-
     repeats = inp_unf_.shape[-1] // opu.input_vector_len
     remainder = inp_unf_.shape[-1] % opu.input_vector_len
     repeats = repeats+1 if remainder!=0 else repeats
@@ -114,18 +113,27 @@ def conv2d_infer(x, filters, channelast=False):
 
     inp_unf = padded_inp.reshape([inp_unf_.shape[0], repeats, -1])
 
-
     temp_out = np.zeros(shape=(inp_unf_.shape[0], filters.shape[2]), dtype=np.int32)
 
+    dot_count=0
     for m in range(temp_out.shape[0]):
         for n in range(temp_out.shape[1]):
+            # st_time = time.time()
             scalar = 0
             for i in range(repeats):
-                scalar += onn_dot_sim(inp_unf[m, i, :], filters[:,i,n])
+                # scalar += onn_dot_sim(inp_unf[m, i, :], filters[:,i,n])
+                # key = tuple(np.concatenate((inp_unf[m, i, :],filters[:,i,n])))
+                key = np.matmul(inp_unf[m, i, :], filters[:,i,n]).min()
+                if key  not in lookup_talble:
+                    temp_value = onn_dot_sim(inp_unf[m, i, :], filters[:,i,n])
+                    lookup_talble[key] = temp_value
+                    dot_count+=1
+                scalar += lookup_talble[key] 
             temp_out[m,n]=scalar
-
-    # out_ = temp_out.reshape([inp_unf_.shape[0], filters.shape[1]])
+            # end_time = time.time()
+            # print(end_time-st_time)
     
+    print("conv_pace_count:{}".format(dot_count))
     out_unf = temp_out.transpose(1,0)
 
     out = out_unf.reshape([filters.shape[2], h_out, w_out])
@@ -137,31 +145,6 @@ def maxpooling(x, pool_size=2):
     pool_out = pool_out.max(axis=(2, 4))
     return pool_out
 
-# def maxpooling(x, pool_size=2, stride=(2,2), padding=(0,0)):
-#     if len(x.shape)!=4:
-#         x = np.expand_dims(x,0)
-    
-#     N, C, H, W = x.shape
-    
-#     padding_z = np.pad(x,((0,0),(0,0),(padding[0],padding[0]),(padding[1],padding[1])),'constant',constant_values=0)
-
-#     out_h = (H+2*padding[0]-pool_size) // stride[0] +1
-#     out_w = (W+2*padding[1]-pool_size) // stride[1] +1
-
-#     pool_z = np.zeros((N,C,out_h,out_w))
-
-#     for n in np.arange(N):
-#         for c in np.arange(C):
-#             for i in np.arange(out_h):
-#                 for j in np.arange(out_w):
-#                     pool_z[n,c,i,j] = np.max(
-#                         padding_z[n,c,
-#                                     stride[0]*i:stride[0]*i+pool_size,
-#                                     stride[1]*j:stride[1]*j+pool_size,
-#                         ]
-#                     )
-#     return np.squeeze(pool_z,0)
-
 def fc_infer(x, filters):
     # assert(x.shape[-1] == filters.shape[0])
     batch_size = x.shape[0]
@@ -169,29 +152,28 @@ def fc_infer(x, filters):
     remainder = x.shape[-1] % opu.input_vector_len
     repeats = repeats+1 if remainder!=0 else repeats
     
-
-
-    
     pad_dim=opu.input_vector_len*repeats-x.shape[-1]#填右边
     inp_ = np.pad( x, ((0,0),(0, pad_dim)),"constant",constant_values=0)
 
     inp_ = inp_.reshape([batch_size, repeats, -1])
 
-
     temp_out = np.zeros(shape=(x.shape[0], filters.shape[-1]), dtype=np.int32)
 
-    # for i in range(repeats):
-    #     matmul_result = onn_dot_sim(inp_[:, i, :], weight_[:,i,:])
-    #     temp_out = temp_out+ matmul_result
-
-
+    dot_count=0
     for m in range(temp_out.shape[0]):
         for n in range(temp_out.shape[1]):
             scalar = 0
             for i in range(repeats):
-                scalar += onn_dot_sim(inp_[m, i, :], filters[:,i,n])
+                key = np.matmul(inp_[m, i, :], filters[:,i,n]).min()
+                if key  not in lookup_talble:
+                    temp_value = onn_dot_sim(inp_[m, i, :], filters[:,i,n])
+                    lookup_talble[key] = temp_value
+                    dot_count+=1
+
+                scalar += lookup_talble[key]
             temp_out[m,n]=scalar
 
+    print("fc_pace_count:{}".format(dot_count))
 
     return temp_out
 
@@ -217,7 +199,7 @@ def translate_mnist():
     np.save("./data/test_labels", test_labels.numpy())
 
 if __name__ == "__main__":
-    var_path = './pace_mnist_int.npz'
+    var_path = './pace_mnist_int_bit2.npz'
     vars = extract_npy(var_path)
 
     conv1_w = vars[0]
@@ -231,13 +213,16 @@ if __name__ == "__main__":
     test_labels = np.load("./data/test_labels.npy")
 
     import time
-    st_time = time.time()
+    
 
     infer_labels = []
     for image, label in zip(test_data, test_labels):
-
+        st_time = time.time()
         input = onn_binary(image)
+        
+        
         out = conv2d_infer(input, conv1_w,  channelast=False)
+        
         # out = conv2d_infer(image, conv1_w,  channelast=False)
         # np.save('out',out)
         # out =(abs(out) + out ) / 2 #快速实现relu
@@ -245,17 +230,22 @@ if __name__ == "__main__":
         out = maxpooling(out, pool_size=2)
 
         out = onn_binary(out)
+        
         out = conv2d_infer(out, conv2_w, channelast=False)
+        
         # out = (abs(out) + out ) / 2
         # out = np.maximum(out,0)
         out = maxpooling(out, pool_size=2)
 
         out = np.expand_dims(out.flatten(),0)
         out = onn_binary(out)  # 这里结果不一样
+        # st_time = time.time()
         fc_1 = fc_infer(out, fc1_w)
+        end_time = time.time()
         # print(fc_1)
         infer_label = np.argmax(fc_1)
-        print(infer_label, label)
+        
+        print("infer: {}, label: {}, time: {}".format(infer_label, label, (end_time-st_time)))
         infer_labels += [infer_label]
         # print("gt: ", label, "Infer: ", infer_label)
 

@@ -153,7 +153,7 @@ class onn_conv2d(nn.Module):
         # with torch.no_grad():
         # weight__ = self.onn_round( (self.weight + self.w_zero_point)* self.w_scale_factor) # 先对权值进行取整
         weight__ = self.onn_round(self.weight * w_scale_factor )
-        weight__ = torch.clamp(weight__, -7, 7)    
+        weight__ = torch.clamp(weight__, -((2**(self.hardware.bits-1))-1), ((2**(self.hardware.bits-1))-1))    
 
         weight_ = weight__.view(self.output_channel, -1).t() #[out_c,c*k*k]-->[c*k*k, out_c]
 
@@ -234,7 +234,7 @@ class onn_fc(nn.Module):
 
         weight__ = self.onn_round(self.weight * w_scale_factor )
 
-        weight__ = torch.clamp(weight__, -7, 7) 
+        weight__ = torch.clamp(weight__, -((2**(self.hardware.bits-1))-1), ((2**(self.hardware.bits-1))-1))  
 
 
         dim=(0, 0, 0,self.hardware.input_vector_len*repeats-inp.size(-1)) #左右上下， 填下边

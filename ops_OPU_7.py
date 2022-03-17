@@ -40,13 +40,17 @@ class onn_binary(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
-class onn_bit_shift(torch.autograd.Function):
+class onn_thresh(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, out_bits):
+    def forward(ctx, input):
         ctx.save_for_backward(input)
-        output = input.type(torch.uint8) >> (8 - out_bits)
-        
-        return output.type(torch.float32)
+        output = torch.where(input<0, 0.0, 1.0)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -62,18 +66,17 @@ class onn_dot_fun(torch.autograd.Function):
     tia_noise_mean = opu.tia_noise_mean
     out_bits = opu.out_bits
     # my_onn_round = onn_round.apply
-    onn_bit_shift = onn_bit_shift.apply
+    onn_thresh = onn_thresh.apply
 
     @staticmethod
     def forward(ctx, input, weight, ):
         ctx.save_for_backward(input, weight)
         out_mat = input.matmul(weight)
-        out_mat = torch.clamp(out_mat, -128, 127) + 128
-        # out_mat = torch.clamp(out_mat, -128, 127)
+        out_mat = torch.clamp(out_mat, -128, 127)
         # thresh = torch.randn(size=out_mat.size(), requires_grad=False, device=input.device)*onn_dot_fun.tia_noise_sigma + onn_dot_fun.tia_noise_mean
         # out_mat += thresh
         # out_interm = onn_dot_fun.my_onn_round(out_mat) # input和weight均为整数，所以不需要round操作了。
-        result = onn_dot_fun.onn_bit_shift(out_mat, onn_dot_fun.out_bits)
+        result = onn_dot_fun.onn_thresh(out_mat)
         # bit_shift_result = out_interm.type(torch.uint8) >> (8 - onn_dot_fun.out_bits)
         return result
 
@@ -150,7 +153,7 @@ class onn_conv2d(nn.Module):
         # with torch.no_grad():
         # weight__ = self.onn_round( (self.weight + self.w_zero_point)* self.w_scale_factor) # 先对权值进行取整
         weight__ = self.onn_round(self.weight * w_scale_factor )
-        weight__ = torch.clamp(weight__, -((2**(self.hardware.bits-1))-1), ((2**(self.hardware.bits-1))-1))     
+        weight__ = torch.clamp(weight__, -((2**(self.hardware.bits-1))-1), ((2**(self.hardware.bits-1))-1))    
 
         weight_ = weight__.view(self.output_channel, -1).t() #[out_c,c*k*k]-->[c*k*k, out_c]
 
@@ -232,7 +235,6 @@ class onn_fc(nn.Module):
         weight__ = self.onn_round(self.weight * w_scale_factor )
 
         weight__ = torch.clamp(weight__, -((2**(self.hardware.bits-1))-1), ((2**(self.hardware.bits-1))-1)) 
-
 
         dim=(0, 0, 0,self.hardware.input_vector_len*repeats-inp.size(-1)) #左右上下， 填下边
         weight_=F.pad(weight__,dim,"constant",value=0)
